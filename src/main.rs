@@ -107,8 +107,8 @@ type Counter8 = Counter<3>;
 
 struct Mux8 {
     s : Counter8,
-    z : IoPin,
-    e : OutputPin,
+    z : Option<IoPin>,
+    e : Option<OutputPin>,
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -116,21 +116,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Init the multiplexors to read user's input path for our tape.
     let mut mux_out = Mux8 {
         s : Counter8::new([17, 27, 22]),
-        z : get_digital_generic(5, Mode::Output),
-        e : get_digital_out(6),
+        z : None,
+        e : Some(get_digital_out(6)),
     };
 
-    mux_out.e.set_low();
-    mux_out.z.set_high();
+    mux_out.e.unwrap().set_low();
 
     let mut mux_in = Mux8 {
         s : Counter8::new([16, 20, 21]),
-        z : get_digital_generic(23, Mode::Input),
-        e : get_digital_out(24),
+        z : Some(get_digital_generic(23, Mode::Input)),
+        e : None,
     };
-
-    mux_in.e.set_low();
-    mux_in.z.set_bias(Bias::PullDown);
+    
+    mux_in.z.as_mut().unwrap().set_bias(Bias::PullDown);
 
     let mut mux_in_data : [Level ; 8] = [Level::Low; 8];
         
@@ -147,11 +145,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     // We need to calculate how we want to divi up our tape into seekable chuncks
     let num_chunks : u32  = 8;
     let chunk_len : u64 = buffer_ms / num_chunks as u64;
-    
-    let mut jump_to_ms : u64 = 0;
+    let mut jump_to_ms : Option<u64> = None;
+   
     loop {
-        // Jump!
-        sink.try_seek(Duration::from_millis(jump_to_ms))?;
+        // Jump if required
+        if let Some(j) = jump_to_ms {
+            sink.try_seek(Duration::from_millis(j))?;
+        }
 
         // We need to compensate for calculation time so let's take a Instant
         let epoch : Instant = Instant::now();
@@ -161,7 +161,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         for _ in 0..8 {
             mux_in.s.up();
             sleep(Duration::from_micros(1));
-            let reading : Level = mux_in.z.read();
+            let reading : Level = mux_in.z.as_mut().unwrap().read();
             mux_in_data[mux_in.s.idx as usize] = reading;
         }
 
@@ -177,12 +177,13 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Convert that to a jump position on our tape
         jump_to_ms = match jump_to {
-            Some(k) => k * chunk_len,
-            None => ((mux_out.s.idx + 1) % num_chunks) as u64 * chunk_len,
+            Some(k) => Some(k * chunk_len),
+            None => None,
         };
 
         // Bit of feedback on the console.
-        println!("{} @ {:08b} _ {}", mux_out.s.idx, mux_in_byte, jump_to_ms);
+        let tape_loc : u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
+        println!("{:08}ms -- @{} x{:08b}", tape_loc, mux_out.s.idx, mux_in_byte);
 
         // Sleep until we are ready to jump again.
         sleep(Duration::from_millis(chunk_len - epoch.elapsed().as_millis() as u64));
