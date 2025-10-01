@@ -11,6 +11,8 @@ use rodio::decoder::DecoderBuilder;
 use rppal::gpio::{Gpio, Level, Mode, Bias};
 use rppal::gpio::{OutputPin, InputPin, IoPin};
 
+use cpal::traits::{DeviceTrait, HostTrait};
+
 #[allow(unused_imports)]
 use rppal::system::DeviceInfo;
 
@@ -113,6 +115,14 @@ struct Mux8 {
 
 fn main() -> Result<(), Box<dyn Error>> {
 
+    // Let's ensure we have a sink before we proceed  
+    let host = cpal::default_host();
+    let device = host.default_output_device().expect("no audio devices.. gross!");
+    let dev_conf = device.default_output_config()?;
+
+    println!("name = {}", device.name().unwrap_or_else(|_| "dead device _ do not use".into()));
+    println!("{:?}", dev_conf);
+       
     // Init the multiplexors to read user's input path for our tape.
     let mut mux_out = Mux8 {
         s : Counter8::new([17, 27, 22]),
