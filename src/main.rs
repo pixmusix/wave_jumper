@@ -3,6 +3,8 @@ use std::fs::File;
 use std::time::Duration;
 use std::thread::sleep;
 use std::time::Instant;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use rodio::OutputStreamBuilder;
 use rodio::{Sink, Source};
@@ -23,18 +25,18 @@ fn bit(value: &usize, idx: u32) -> u8 {
 
 #[allow(dead_code)]
 fn get_digital_out(pin: u8) -> OutputPin {
-    let io =  Gpio::new().expect("GPIOs not accessible. Input/Output is required.");
+    let io =  Gpio::new().expect("GPIOs not accessible.");
     io.get(pin).unwrap().into_output()
 }
 
 #[allow(dead_code)]
 fn get_digital_in(pin: u8) -> InputPin {
-    let io =  Gpio::new().expect("GPIOs not accessible. Input/Output is required.");
+    let io =  Gpio::new().expect("GPIOs not accessible.");
     io.get(pin).unwrap().into_input()
 }
 
 fn get_digital_generic(pin: u8, mode: Mode) -> IoPin {  
-    let io =  Gpio::new().expect("GPIOs not accessible. Input/Output is required.");
+    let io =  Gpio::new().expect("GPIOs not accessible.");
     io.get(pin).unwrap().into_io(mode)
 }
 
@@ -102,13 +104,22 @@ impl<const BITS: usize>  Counter<BITS> {
         self.idx = (self.idx + 1) % (1 << BITS);
         self.out();
     }
+
+    fn set(&mut self, idx : u32) -> Result<(), Box<dyn Error>> {
+        if idx >= (1 << BITS) {
+            return Err("The provided index is unexpressible by this counter".into());
+        }
+        self.idx = idx;
+        self.out();
+        Ok(())
+     }
       
 }
 
 type Counter8 = Counter<3>;
 
 struct Mux8 {
-    s : Counter8,
+    s : Rc<RefCell<Counter8>>,
     z : Option<IoPin>,
     e : Option<OutputPin>,
 }
@@ -122,25 +133,45 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     println!("name = {}", device.name().unwrap_or_else(|_| "dead device _ do not use".into()));
     println!("{:?}", dev_conf);
-       
+    
     // Init the multiplexors to read user's input path for our tape.
-    let mut mux_out = Mux8 {
-        s : Counter8::new([17, 27, 22]),
+    let counter_muxout = Counter8::new([17, 27, 22]);
+    let mutrc_counter_muxout = Rc::new(RefCell::new(counter_muxout));
+    let mux_out_lsb = Mux8 {
+        s : Rc::clone(&mutrc_counter_muxout),
+        z : None,
+        e : Some(get_digital_out(5)),
+    };
+    let mux_out_msb = Mux8 {
+        s : Rc::clone(&mutrc_counter_muxout),
         z : None,
         e : Some(get_digital_out(6)),
     };
+    
+    let mut mux_out : [Mux8; 2] = [mux_out_lsb, mux_out_msb];
+    for mx in mux_out.iter_mut() {
+        mx.e.as_mut().unwrap().set_high();
+    }
 
-    mux_out.e.unwrap().set_low();
-
-    let mut mux_in = Mux8 {
-        s : Counter8::new([16, 20, 21]),
+    let counter_muxin = Counter8::new([16, 20, 21]);
+    let mutrc_counter_muxin = Rc::new(RefCell::new(counter_muxin));
+    let mux_in_lsb = Mux8 {
+        s : Rc::clone(&mutrc_counter_muxin),
         z : Some(get_digital_generic(23, Mode::Input)),
         e : None,
     };
-    
-    mux_in.z.as_mut().unwrap().set_bias(Bias::PullDown);
+    let mux_in_msb = Mux8 {
+        s : Rc::clone(&mutrc_counter_muxin),
+        z : Some(get_digital_generic(24, Mode::Input)),
+        e : None,
+    };
 
-    let mut mux_in_data : [Level ; 8] = [Level::Low; 8];
+    let mut mux_in : [Mux8; 2] = [mux_in_lsb, mux_in_msb];
+    for mx in mux_in.iter_mut() {
+        mx.z.as_mut().unwrap().set_bias(Bias::PullDown);
+    }
+
+    let mut mux_in_data : [Level ; 16] = [Level::Low; 16];
         
     // Make a sink containing a loopable, seekable, and measured tape
     let stream_handle = OutputStreamBuilder::open_default_stream()?;
@@ -153,9 +184,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     sink.append(tape);
 
     // We need to calculate how we want to divi up our tape into seekable chuncks
-    let num_chunks : u32  = 8;
+    let num_chunks : u32  = 16;
     let chunk_len : u64 = buffer_ms / num_chunks as u64;
     let mut jump_to_ms : Option<u64> = None;
+    let mut jump_from : u32 = 0;
    
     loop {
         // Jump if required
@@ -166,14 +198,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         // We need to compensate for calculation time so let's take a Instant
         let epoch : Instant = Instant::now();
 
-        // ROR output index and pull all connections to mux_in for that index.
-        mux_out.s.up();
-        for _ in 0..8 {
-            mux_in.s.up();
-            sleep(Duration::from_micros(1));
-            let reading : Level = mux_in.z.as_mut().unwrap().read();
-            mux_in_data[mux_in.s.idx as usize] = reading;
+        // ROR output index
+        jump_from = (jump_from + 1) % num_chunks;
+        let (w, i)  : (usize, u32) = ((jump_from / 8) as usize, jump_from % 8);
+        mux_out[w].s.borrow_mut().set(i)?;
+        mux_out[w].e.as_mut().unwrap().set_low();
+
+        // Scan all multiplexed inputs
+        for (k, mx) in mux_in.iter_mut().enumerate() {
+            for _ in 0..8 {
+                mx.s.borrow_mut().up();
+                sleep(Duration::from_micros(1));
+                let reading : Level = mx.z.as_mut().unwrap().read();
+                mux_in_data[k * mx.s.borrow().idx as usize] = reading;
+            }
         }
+
+        // We're done with our IO so we can diable the mux again.
+        mux_out[w].e.as_mut().unwrap().set_high();
 
         // Flatten the multiplexed input into a unsigned int.
         let mux_in_byte : usize = mux_in_data.iter().enumerate().fold(
@@ -183,7 +225,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
 
         // Calculate the longest path we can take between mux_out and mux_in
-        let jump_to : Option<u64> = get_bitidx_at_maxdelta(&mux_out.s.idx, &mux_in_byte, 8);
+        let jump_to : Option<u64> = get_bitidx_at_maxdelta(&jump_from, &mux_in_byte, num_chunks);
 
         // Convert that to a jump position on our tape
         jump_to_ms = match jump_to {
@@ -193,9 +235,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Bit of feedback on the console.
         let tape_loc : u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
-        println!("{:08}ms -- @{} x{:08b}", tape_loc, mux_out.s.idx, mux_in_byte);
+        println!("{:08}ms -- @{} x{:08b}", tape_loc, jump_from, mux_in_byte);
 
         // Sleep until we are ready to jump again.
-        sleep(Duration::from_millis(chunk_len - epoch.elapsed().as_millis() as u64));
+        sleep(Duration::from_millis(chunk_len) - epoch.elapsed());
     }  
 }
