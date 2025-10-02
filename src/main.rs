@@ -153,7 +153,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         mx.e.as_mut().unwrap().set_high();
     }
 
-    let counter_muxin = Counter8::new([16, 20, 21]);
+    let counter_muxin = Counter8::new([21, 20, 16]);
     let mutrc_counter_muxin = Rc::new(RefCell::new(counter_muxin));
     let mux_in_lsb = Mux8 {
         s : Rc::clone(&mutrc_counter_muxin),
@@ -166,7 +166,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         e : None,
     };
 
-    let mut mux_in : [Mux8; 2] = [mux_in_lsb, mux_in_msb];
+    let mut mux_in : [Mux8; 2] = [mux_in_msb, mux_in_lsb];
     for mx in mux_in.iter_mut() {
         mx.z.as_mut().unwrap().set_bias(Bias::PullDown);
     }
@@ -208,9 +208,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         for (k, mx) in mux_in.iter_mut().enumerate() {
             for _ in 0..8 {
                 mx.s.borrow_mut().up();
-                sleep(Duration::from_micros(1));
+                sleep(Duration::from_micros(1000));
                 let reading : Level = mx.z.as_mut().unwrap().read();
-                mux_in_data[k * mx.s.borrow().idx as usize] = reading;
+                let i : usize  = (k * 8) + mx.s.borrow().idx as usize;
+                mux_in_data[i] = reading;
             }
         }
 
@@ -235,7 +236,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Bit of feedback on the console.
         let tape_loc : u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
-        println!("{:08}ms -- @{} x{:08b}", tape_loc, jump_from, mux_in_byte);
+        println!("{:08}ms -- @{:02} x{:016b}", tape_loc, jump_from, mux_in_byte);
 
         // Sleep until we are ready to jump again.
         sleep(Duration::from_millis(chunk_len) - epoch.elapsed());
