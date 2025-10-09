@@ -177,7 +177,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stream_handle = OutputStreamBuilder::open_default_stream()?;
     let sink = Sink::connect_new(stream_handle.mixer());
 
-    let mf : String = "assets/music.mp3".to_string();
+    let mf : String = "assets/arp.mp3".to_string();
     let tape = get_decoded_mp3(&mf).build_looped()?;    
     let buffer_ms : u64 = get_mp3_duration(get_decoded_mp3(&mf));
 
@@ -228,6 +228,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Calculate the longest path we can take between mux_out and mux_in
         let jump_to : Option<u64> = get_bitidx_at_maxdelta(&jump_from, &mux_in_byte, num_chunks);
 
+        if let Some(j) = jump_to {
+            jump_from = j as u32;
+        }
+        
         // Convert that to a jump position on our tape
         jump_to_ms = match jump_to {
             Some(k) => Some(k * chunk_len),
