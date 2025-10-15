@@ -1,10 +1,11 @@
 use std::cell::RefCell;
 use std::error::Error;
-use std::fs::File;
+use std::fs::{File, ReadDir};
+use std::fs::read_dir;
+use std::ffi::OsStr;
 use std::rc::Rc;
 use std::thread::sleep;
-use std::time::Duration;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rodio::decoder::DecoderBuilder;
 use rodio::OutputStreamBuilder;
@@ -23,14 +24,9 @@ use ssd1306::{I2CDisplayInterface, Ssd1306};
 use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyle};
 use embedded_graphics::pixelcolor::BinaryColor;
 use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Circle, Line, PrimitiveStyle};
+use embedded_graphics::primitives::{Rectangle, Circle, Line};
+use embedded_graphics::primitives::PrimitiveStyle;
 use embedded_graphics::text::Text;
-
-// 128×64 I²C OLED in buffered-graphics mode
-type Oled = Ssd1306<I2CInterface<I2c>, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;
-
-// 3 bit binary counter
-type Counter8 = Counter<3>;
 
 #[allow(unused_imports)]
 use rppal::system::DeviceInfo;
@@ -52,6 +48,7 @@ fn get_digital_in(pin: u8) -> InputPin {
     io.get(pin).unwrap().into_input()
 }
 
+#[allow(dead_code)]
 fn get_digital_generic(pin: u8, mode: Mode) -> IoPin {
     let io = Gpio::new().expect("GPIOs not accessible.");
     io.get(pin).unwrap().into_io(mode)
@@ -76,6 +73,22 @@ fn get_bitidx_at_maxdelta(i: &u32, w: &usize, m: u32) -> Option<u64> {
     return idx_maxdelta;
 }
 
+fn get_mp3_from_local_assets() -> Result<Vec<String>, std::io::Error> {
+    let entries: ReadDir = read_dir("./assets/")?;
+    let ok_entries = entries.filter_map(|res| res.ok());
+    let paths = ok_entries.map(|e| e.path());
+    
+    let mp3s = paths.filter(|p| {
+        let ext: Option<&OsStr> = p.extension();
+        let ext_str: Option<&str> = ext.and_then(|e| e.to_str());
+        ext_str.map_or(false, |e| e.eq_ignore_ascii_case("mp3"))
+    });
+
+    let mp3_string = mp3s.map(|p| p.to_string_lossy().into_owned());
+    Ok(mp3_string.collect())
+}
+
+
 fn get_decoded_mp3(mf: &str) -> DecoderBuilder<File> {
     let file = File::open(mf).unwrap();
     let len = file.metadata().unwrap().len();
@@ -93,12 +106,28 @@ fn get_mp3_duration(dat: DecoderBuilder<File>) -> u64 {
     return buffer_ms;
 }
 
+fn punch_file_into_sink(mf: &str, sink: &Sink) -> Result<(), Box<dyn Error>>{
+    let tape = get_decoded_mp3(&mf).build_looped()?;
+    sink.append(tape);
+    Ok(())
+}
+
 fn get_ssd1306(i2c: I2c) -> Oled {
     let interface = I2CDisplayInterface::new(i2c);
     let oled = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0);
     oled.into_buffered_graphics_mode()
 }
 
+// 128×64 I²C OLED in buffered-graphics mode
+type Oled = Ssd1306<I2CInterface<I2c>, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;
+
+// 3 bit binary counter
+type Counter8 = Counter<3>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Latch {Set, Reset}
+
+#[allow(dead_code)]
 #[derive(Copy, Clone)]
 enum Brush {
     Marker,
@@ -114,7 +143,7 @@ impl Brush {
             Brush::Marker => PrimitiveStyle::with_fill(On),
             Brush::Pen    => PrimitiveStyle::with_stroke(On, 2),
             Brush::Pencil => PrimitiveStyle::with_stroke(On, 1),
-            Brush::Eraser => PrimitiveStyle::with_stroke(Off, 3),
+            Brush::Eraser => PrimitiveStyle::with_fill(Off),
         }
     }
 }
@@ -144,35 +173,56 @@ impl Display {
         return x_in_range && y_in_range;
     }
 
-    fn circle(&mut self, x: i32, y: i32, sz: u32, brush: Option<Brush>) -> Result<(), Box<dyn Error>> {
+    fn rect(&mut self, x: i32, y: i32, a: u32, b: u32, brush: Option<Brush>) {
         let draw_point = Point::new(x, y);
-        if !self.point_in_range(draw_point) {
-            return Err("Cannot draw circle outside the bounds of a the display<128,64>".into());
-        }
+        assert!(self.point_in_range(draw_point));
+        let size: Size = Size::new(a, b);
+
+        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
+
+        let rect = Rectangle::new(draw_point, size);
+        rect.into_styled(style).draw(&mut self.oled).unwrap();
+    }
+
+    #[allow(dead_code)]
+    fn circle(&mut self, x: i32, y: i32, sz: u32, brush: Option<Brush>) {
+        let draw_point = Point::new(x, y);
+        assert!(self.point_in_range(draw_point));
 
         let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
 
         let circle = Circle::new(draw_point, sz);
         circle.into_styled(style).draw(&mut self.oled).unwrap();
-        Ok(())
     }
 
+    #[allow(dead_code)]
     fn line(&mut self, x: i32, y: i32, v: i32, w: i32, brush: Option<Brush>) {
-        let line = Line::new(Point::new(x, y), Point::new(v, w));
+        let start = Point::new(x, y);
+        let end = Point::new(v, w);
+        assert!(self.point_in_range(start) && self.point_in_range(end));
+        
         let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
+
+        let line = Line::new(start, end);
         line.into_styled(style).draw(&mut self.oled).unwrap();
     }
 
-    fn text(&mut self, x: i32, y: i32, txt: String) {
+    #[allow(dead_code)]
+    fn text(&mut self, x: i32, y: i32, txt: &str) {
+        let draw_point = Point::new(x, y);
+        assert!(self.point_in_range(draw_point));
+        
         let font = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-        let text = Text::new(&txt, Point::new(x, y), font);
+        let text = Text::new(&txt, draw_point, font);
         text.draw(&mut self.oled).unwrap();
     }
 
+    #[allow(dead_code)]
     fn clear(&mut self) {
         self.oled.clear(BinaryColor::Off).unwrap();
     }
 
+    #[allow(dead_code)]
     fn paint(&mut self) {
         self.oled.flush().unwrap();
     }
@@ -284,26 +334,59 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // A nice oled display for some user feedback
     let mut ssd1306 = Display::new(get_ssd1306(I2c::new()?));
-    ssd1306.circle(64, 32, 5, Some(Brush::Marker));
-    ssd1306.paint();
+
+    // Some user input to skip to next song
+    let button : InputPin = get_digital_in(26);
+    let mut latch = Latch::Reset;
 
     // Make a sink containing a loopable, seekable, and measured tape
     let stream_handle = OutputStreamBuilder::open_default_stream()?;
     let sink = Sink::connect_new(stream_handle.mixer());
 
-    let mf: String = "assets/arp.mp3".to_string();
-    let tape = get_decoded_mp3(&mf).build_looped()?;
-    let buffer_ms: u64 = get_mp3_duration(get_decoded_mp3(&mf));
-
-    sink.append(tape);
+    let mp3s: Vec<String> = get_mp3_from_local_assets()?;
+    let mut current_mp3_idx: usize = 0;
+    let mut mf: &String = &mp3s[current_mp3_idx];
+    let mut buffer_ms: u64 = get_mp3_duration(get_decoded_mp3(mf));
+    
+    punch_file_into_sink(mf, &sink)?;
 
     // We need to calculate how we want to divi up our tape into seekable chuncks
     let num_chunks: u32 = 16;
-    let chunk_len: u64 = buffer_ms / num_chunks as u64;
+    let mut chunk_len: u64 = buffer_ms / num_chunks as u64;
     let mut jump_to_ms: Option<u64> = None;
     let mut jump_from: u32 = 0;
 
+    // feedback for selected song
+    ssd1306.text(5, 5, mf);
+
+    // lets go chaps
+    sink.play();
+
     loop {
+        // Check if we skip to next tape loop
+        if button.is_low() && latch == Latch::Reset {
+            // Set the latch to avoid double skipping
+            latch = Latch::Set;
+            // Clear sink of our current loop
+            sink.stop();
+            // Get the next song
+            current_mp3_idx = (current_mp3_idx + 1) % mp3s.len();
+            mf = &mp3s[current_mp3_idx];
+            // We need to update the length of each sample to new track
+            buffer_ms = get_mp3_duration(get_decoded_mp3(mf));
+            chunk_len = buffer_ms / num_chunks as u64;
+            // Got a new file, let's play it
+            punch_file_into_sink(mf, &sink)?;
+            sink.play();
+
+            // Draw the music file path to screen
+            ssd1306.rect(0, 0, 128, 20, Some(Brush::Eraser));
+            ssd1306.text(5, 5, mf);
+        } else if latch == Latch::Set && button.is_high() {
+            // User has released the button
+            latch = Latch::Reset;
+        }
+        
         // Jump if required
         if let Some(j) = jump_to_ms {
             sink.try_seek(Duration::from_millis(j))?;
@@ -333,8 +416,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         mux_out[w].e.as_mut().unwrap().set_high();
 
         // Flatten the multiplexed input into a unsigned int.
-        let mux_in_byte: usize = mux_in_data.iter().enumerate().fold(0, |e, (i, &b)| {
-            // let mut e = 0
+        let mux_in_byte: usize = mux_in_data.iter().enumerate()
+            .fold(0, |e, (i, &b)| {       // let mut e = 0
             e | ((b as u8) as usize) << i // e |= &b << i;
         });
 
@@ -350,6 +433,9 @@ fn main() -> Result<(), Box<dyn Error>> {
             Some(k) => Some(k * chunk_len),
             None => None,
         };
+
+        // Paint any changes to the display
+        ssd1306.paint();
 
         // Bit of feedback on the console.
         let tape_loc: u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
