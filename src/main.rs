@@ -99,17 +99,42 @@ fn get_ssd1306(i2c: I2c) -> Oled {
     oled.into_buffered_graphics_mode()
 }
 
-struct Display {
-    oled: Oled,
+#[derive(Copy, Clone)]
+enum Brush {
+    Marker,
+    Pen,
+    Pencil,
+    Eraser,
 }
 
-impl Display {
+impl Brush {
+    fn style(self) -> PrimitiveStyle<BinaryColor> {
+        use BinaryColor::{Off, On};
+        match self {
+            Brush::Marker => PrimitiveStyle::with_fill(On),
+            Brush::Pen    => PrimitiveStyle::with_stroke(On, 2),
+            Brush::Pencil => PrimitiveStyle::with_stroke(On, 1),
+            Brush::Eraser => PrimitiveStyle::with_stroke(Off, 3),
+        }
+    }
+}
+
+struct Display {
+    oled: Oled,
+    default_brush : Brush,
+}
+
+impl Display {    
+    
     fn new(mut disp: Oled) -> Self {
         disp.init().unwrap();
         disp.clear(BinaryColor::Off).unwrap();
         disp.flush().unwrap();
 
-        Display { oled: disp }
+        Display {
+            oled: disp,
+            default_brush: Brush::Pencil,
+        }
     }
 
     fn point_in_range(&self, pnt: Point) -> bool {
@@ -119,41 +144,28 @@ impl Display {
         return x_in_range && y_in_range;
     }
 
-    fn circle(
-        &mut self,
-        x: i32,
-        y: i32,
-        sz: u32,
-        solid: bool,
-        viz: bool,
-    ) -> Result<(), Box<dyn Error>> {
-        use BinaryColor::{Off, On};
+    fn circle(&mut self, x: i32, y: i32, sz: u32, brush: Option<Brush>) -> Result<(), Box<dyn Error>> {
         let draw_point = Point::new(x, y);
         if !self.point_in_range(draw_point) {
             return Err("Cannot draw circle outside the bounds of a the display<128,64>".into());
         }
 
+        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
+
         let circle = Circle::new(draw_point, sz);
-
-        let style: PrimitiveStyle<BinaryColor> = if solid {
-            PrimitiveStyle::with_fill(if viz { On } else { Off })
-        } else {
-            PrimitiveStyle::with_stroke(if viz { On } else { Off }, 1)
-        };
-
         circle.into_styled(style).draw(&mut self.oled).unwrap();
         Ok(())
     }
 
-    fn line(&mut self, x: i32, y: i32, v: i32, w: i32) {
+    fn line(&mut self, x: i32, y: i32, v: i32, w: i32, brush: Option<Brush>) {
         let line = Line::new(Point::new(x, y), Point::new(v, w));
-        let style = PrimitiveStyle::with_stroke(BinaryColor::On, 1);
+        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
         line.into_styled(style).draw(&mut self.oled).unwrap();
     }
 
     fn text(&mut self, x: i32, y: i32, txt: String) {
         let font = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-        let text = Text::new(&txt, Point::new(10, 20), font);
+        let text = Text::new(&txt, Point::new(x, y), font);
         text.draw(&mut self.oled).unwrap();
     }
 
@@ -166,6 +178,7 @@ impl Display {
     }
 }
 
+#[derive(Debug)]
 struct Counter<const BITS: usize> {
     idx: u32,
     pins: [OutputPin; BITS],
@@ -207,6 +220,7 @@ impl<const BITS: usize> Counter<BITS> {
     }
 }
 
+#[derive(Debug)]
 struct Mux8 {
     s: Rc<RefCell<Counter8>>,
     z: Option<IoPin>,
@@ -270,7 +284,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // A nice oled display for some user feedback
     let mut ssd1306 = Display::new(get_ssd1306(I2c::new()?));
-    ssd1306.circle(64, 32, 5, true, true);
+    ssd1306.circle(64, 32, 5, Some(Brush::Marker));
     ssd1306.paint();
 
     // Make a sink containing a loopable, seekable, and measured tape
