@@ -8,13 +8,27 @@ use oled::*;
 use pinio::*;
 use prelude::*;
 
+// UI for a gpio/mux pin
+#[derive(Debug, Default, Copy, Clone)]
+struct Dot {
+    x: i32,
+    y: i32,
+    sz: u32,
+}
+
+// UI for connections between pins
+#[derive(Default, Debug, Copy, Clone)]
+struct Link {
+    a: Dot,
+    b: Dot,
+}
 
 fn bit_at(value: &usize, idx: u32) -> u8 {
     ((value >> idx) & 1) as u8
 }
 
-// for some binary uint w, return the index of the
-// high bit furthest from an arbitrary point i
+// for some binary number (value), return the index of the
+// high bit furthest from an arbitrary point in this bitstring (mark)
 fn get_bitidx_at_maxdelta(mark: &u32, value: &usize, modulo: u32) -> Option<u64> {
     let mut delta: u32 = 0;
     let mut idx_maxdelta: Option<u64> = None;
@@ -76,7 +90,16 @@ fn get_ssd1306(i2c: I2c) -> Oled {
     oled.into_buffered_graphics_mode()
 }
 
-
+fn get_dot_row(doty: i32, size: u32, pad: u32, num: usize) -> Vec<Dot> {
+    let mut dots: Vec<Dot> = Vec::new();
+    let mut dotx: i32 = 0; 
+    for _ in 0..num {
+        dotx = (dotx as u32 + pad) as i32;
+        dots.push(Dot{x: dotx, y: doty, sz: size});
+    }
+    return dots;
+}
+    
 fn main() -> Result<(), Box<dyn Error>> {
     // Let's ensure we have a sink before we proceed
     let host = cpal::default_host();
@@ -87,6 +110,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     let dev_name = device.name().unwrap_or_else(|_| "dead device _ do not use".into());
     println!("@Device Name = {}", dev_name);
     println!("@Device Config = {:?}", dev_conf);
+
+    // Number of chunks to split our song into.
+    const num_steps: usize = 16;
 
     /* Init the multiplexors to read user's input path for our tape */
     // Construct output mux
@@ -127,10 +153,19 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     // This array can collect and store the data received from every input mux
-    let mut mux_in_data: [Level; 16] = [Level::Low; 16];
+    let mut mux_in_data: [Level; num_steps] = [Level::Low; num_steps];
 
     // A nice oled display for some user feedback
     let mut ssd1306 = Display::new(get_ssd1306(I2c::new()?));
+
+    // Some UI decisions.
+    const title_ui_ycoord: i32 = 5;
+    const muxout_ui_ycoord: i32 = 15;
+    const muxin_ui_ycoord: i32 = 55;
+    const line_ui_ystart: i32 = muxout_ui_ycoord + 10;
+    const line_ui_yend: i32 = muxin_ui_ycoord - 10;
+    const dot_ui_size: u32 = 7;
+    const dot_ui_xpad: u32 = dot_ui_size;
 
     // Some user input to skip to next song
     let button : InputPin = get_digital_in(26);
@@ -150,13 +185,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     punch_file_into_sink(mf, &sink)?;
 
     // We need to calculate how we want to divi up our tape into seekable chuncks
-    let num_chunks: u32 = 16;
+    let num_chunks : u32 = num_steps as u32;
     let mut chunk_len: u64 = buffer_ms / num_chunks as u64;
     let mut jump_to_ms: Option<u64> = None;
     let mut jump_from: u32 = 0;
 
     // feedback for selected song
-    ssd1306.text(5, 5, mf);
+    ssd1306.text(5, title_ui_ycoord, mf);
+    // feedback for outmux
+    let dots: [Dot; num_steps] = get_dot_row(
+        muxout_ui_ycoord,
+        dot_ui_size,
+        dot_ui_xpad,
+        num_steps
+    ).try_into().unwrap();
+    for dot in dots {
+        ssd1306.circle(dot.x, dot.y, dot.sz, Some(Brush::Pen));
+    }
 
     // lets go chaps
     sink.play();
@@ -194,11 +239,20 @@ fn main() -> Result<(), Box<dyn Error>> {
         // We need to compensate for calculation time so let's take a Instant
         let epoch: Instant = Instant::now();
 
+        // Clear dot from last time
+        let mut muxout_dot: &Dot = &dots[jump_from as usize];
+        ssd1306.circle(muxout_dot.x, muxout_dot.y, muxout_dot.sz, Some(Brush::Eraser));
+        ssd1306.circle(muxout_dot.x, muxout_dot.y, muxout_dot.sz, Some(Brush::Pen));
+        
         // ROR output index
         jump_from = (jump_from + 1) % num_chunks;
         let (w, i): (usize, u32) = ((jump_from / 8) as usize, jump_from % 8);
         mux_out[w].s.borrow_mut().set(i)?;
         mux_out[w].e.as_mut().unwrap().set_low();
+
+        // Replace with new dot after ROR
+        muxout_dot = &dots[jump_from as usize];
+        ssd1306.circle(muxout_dot.x, muxout_dot.y, muxout_dot.sz, Some(Brush::Marker));
 
         // Scan all multiplexed inputs
         for (k, mx) in mux_in.iter_mut().enumerate() {
@@ -215,10 +269,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         mux_out[w].e.as_mut().unwrap().set_high();
 
         // Flatten the multiplexed input into a unsigned int.
-        let mux_in_byte: usize = mux_in_data.iter().enumerate()
+        let mut mux_in_byte: usize = mux_in_data.iter().enumerate()
             .fold(0, |e, (i, &b)| {       // let mut e = 0
             e | ((b as u8) as usize) << i // e |= &b << i;
         });
+
+        // In my setup, the input mux reads s7 to s0. Let's flip the word to accomodate.
+        // mux_in_byte = mux_in_byte.reverse_bits();
 
         // Calculate the longest path we can take between mux_out and mux_in
         let jump_to: Option<u64> = get_bitidx_at_maxdelta(&jump_from, &mux_in_byte, num_chunks);
