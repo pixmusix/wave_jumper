@@ -1,73 +1,32 @@
-use std::cell::RefCell;
-use std::error::Error;
-use std::fs::{File, ReadDir};
-use std::fs::read_dir;
-use std::ffi::OsStr;
-use std::rc::Rc;
-use std::thread::sleep;
-use std::time::{Duration, Instant};
+mod oled;
+mod mux;
+mod pinio;
+mod prelude;
 
-use rodio::decoder::DecoderBuilder;
-use rodio::OutputStreamBuilder;
-use rodio::{Sink, Source};
+use mux::*;
+use oled::*;
+use pinio::*;
+use prelude::*;
 
-use cpal::traits::{DeviceTrait, HostTrait};
 
-use rppal::gpio::{Bias, Gpio, Level, Mode};
-use rppal::gpio::{InputPin, IoPin, OutputPin};
-use rppal::i2c::I2c;
-
-use ssd1306::mode::BufferedGraphicsMode;
-use ssd1306::prelude::*;
-use ssd1306::{I2CDisplayInterface, Ssd1306};
-
-use embedded_graphics::mono_font::{ascii::FONT_6X10, MonoTextStyle};
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::prelude::*;
-use embedded_graphics::primitives::{Rectangle, Circle, Line};
-use embedded_graphics::primitives::PrimitiveStyle;
-use embedded_graphics::text::Text;
-
-#[allow(unused_imports)]
-use rppal::system::DeviceInfo;
-
-#[allow(dead_code)]
-fn bit(value: &usize, idx: u32) -> u8 {
+fn bit_at(value: &usize, idx: u32) -> u8 {
     ((value >> idx) & 1) as u8
 }
 
-#[allow(dead_code)]
-fn get_digital_out(pin: u8) -> OutputPin {
-    let io = Gpio::new().expect("GPIOs not accessible.");
-    io.get(pin).unwrap().into_output()
-}
-
-#[allow(dead_code)]
-fn get_digital_in(pin: u8) -> InputPin {
-    let io = Gpio::new().expect("GPIOs not accessible.");
-    io.get(pin).unwrap().into_input()
-}
-
-#[allow(dead_code)]
-fn get_digital_generic(pin: u8, mode: Mode) -> IoPin {
-    let io = Gpio::new().expect("GPIOs not accessible.");
-    io.get(pin).unwrap().into_io(mode)
-}
-
-fn get_bitidx_at_maxdelta(i: &u32, w: &usize, m: u32) -> Option<u64> {
-    // for some binary uint w, return the index of the
-    // high bit furthest from an arbitrary point i
-    let mut d: u32 = 0;
+// for some binary uint w, return the index of the
+// high bit furthest from an arbitrary point i
+fn get_bitidx_at_maxdelta(mark: &u32, value: &usize, modulo: u32) -> Option<u64> {
+    let mut delta: u32 = 0;
     let mut idx_maxdelta: Option<u64> = None;
-    while d < (m / 2) {
-        d += 1;
-        let sin: u32 = i.wrapping_sub(d) % m;
-        let dex: u32 = i.wrapping_add(d) % m;
-        if bit(w, sin) != 0 {
-            idx_maxdelta = Some(sin as u64);
+    while delta < (modulo / 2) {
+        delta += 1;
+        let lft: u32 = mark.wrapping_sub(delta) % modulo;
+        let rht: u32 = mark.wrapping_add(delta) % modulo;
+        if bit_at(value, lft) != 0 {
+            idx_maxdelta = Some(lft as u64);
         }
-        if bit(w, dex) != 0 {
-            idx_maxdelta = Some(dex as u64);
+        if bit_at(value, rht) != 0 {
+            idx_maxdelta = Some(rht as u64);
         }
     }
     return idx_maxdelta;
@@ -87,7 +46,6 @@ fn get_mp3_from_local_assets() -> Result<Vec<String>, std::io::Error> {
     let mp3_string = mp3s.map(|p| p.to_string_lossy().into_owned());
     Ok(mp3_string.collect())
 }
-
 
 fn get_decoded_mp3(mf: &str) -> DecoderBuilder<File> {
     let file = File::open(mf).unwrap();
@@ -118,164 +76,6 @@ fn get_ssd1306(i2c: I2c) -> Oled {
     oled.into_buffered_graphics_mode()
 }
 
-// 128×64 I²C OLED in buffered-graphics mode
-type Oled = Ssd1306<I2CInterface<I2c>, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;
-
-// 3 bit binary counter
-type Counter8 = Counter<3>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Latch {Set, Reset}
-
-#[allow(dead_code)]
-#[derive(Copy, Clone)]
-enum Brush {
-    Marker,
-    Pen,
-    Pencil,
-    Eraser,
-}
-
-impl Brush {
-    fn style(self) -> PrimitiveStyle<BinaryColor> {
-        use BinaryColor::{Off, On};
-        match self {
-            Brush::Marker => PrimitiveStyle::with_fill(On),
-            Brush::Pen    => PrimitiveStyle::with_stroke(On, 2),
-            Brush::Pencil => PrimitiveStyle::with_stroke(On, 1),
-            Brush::Eraser => PrimitiveStyle::with_fill(Off),
-        }
-    }
-}
-
-struct Display {
-    oled: Oled,
-    default_brush : Brush,
-}
-
-impl Display {    
-    
-    fn new(mut disp: Oled) -> Self {
-        disp.init().unwrap();
-        disp.clear(BinaryColor::Off).unwrap();
-        disp.flush().unwrap();
-
-        Display {
-            oled: disp,
-            default_brush: Brush::Pencil,
-        }
-    }
-
-    fn point_in_range(&self, pnt: Point) -> bool {
-        let oled_size: embedded_graphics::geometry::Size = self.oled.size();
-        let x_in_range: bool = (0..oled_size.width).contains(&(pnt.x as u32));
-        let y_in_range: bool = (0..oled_size.height).contains(&(pnt.y as u32));
-        return x_in_range && y_in_range;
-    }
-
-    fn rect(&mut self, x: i32, y: i32, a: u32, b: u32, brush: Option<Brush>) {
-        let draw_point = Point::new(x, y);
-        assert!(self.point_in_range(draw_point));
-        let size: Size = Size::new(a, b);
-
-        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
-
-        let rect = Rectangle::new(draw_point, size);
-        rect.into_styled(style).draw(&mut self.oled).unwrap();
-    }
-
-    #[allow(dead_code)]
-    fn circle(&mut self, x: i32, y: i32, sz: u32, brush: Option<Brush>) {
-        let draw_point = Point::new(x, y);
-        assert!(self.point_in_range(draw_point));
-
-        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
-
-        let circle = Circle::new(draw_point, sz);
-        circle.into_styled(style).draw(&mut self.oled).unwrap();
-    }
-
-    #[allow(dead_code)]
-    fn line(&mut self, x: i32, y: i32, v: i32, w: i32, brush: Option<Brush>) {
-        let start = Point::new(x, y);
-        let end = Point::new(v, w);
-        assert!(self.point_in_range(start) && self.point_in_range(end));
-        
-        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
-
-        let line = Line::new(start, end);
-        line.into_styled(style).draw(&mut self.oled).unwrap();
-    }
-
-    #[allow(dead_code)]
-    fn text(&mut self, x: i32, y: i32, txt: &str) {
-        let draw_point = Point::new(x, y);
-        assert!(self.point_in_range(draw_point));
-        
-        let font = MonoTextStyle::new(&FONT_6X10, BinaryColor::On);
-        let text = Text::new(&txt, draw_point, font);
-        text.draw(&mut self.oled).unwrap();
-    }
-
-    #[allow(dead_code)]
-    fn clear(&mut self) {
-        self.oled.clear(BinaryColor::Off).unwrap();
-    }
-
-    #[allow(dead_code)]
-    fn paint(&mut self) {
-        self.oled.flush().unwrap();
-    }
-}
-
-#[derive(Debug)]
-struct Counter<const BITS: usize> {
-    idx: u32,
-    pins: [OutputPin; BITS],
-}
-
-impl<const BITS: usize> Counter<BITS> {
-    fn new(gpio_nums: [u8; BITS]) -> Self {
-        let mut outs: Vec<OutputPin> = Vec::new();
-        for i in gpio_nums {
-            outs.push(get_digital_out(i));
-        }
-        let pin_outs: [OutputPin; BITS] = outs.try_into().unwrap();
-        Self {
-            idx: (1 << BITS) - 1,
-            pins: pin_outs,
-        }
-    }
-
-    fn out(&mut self) {
-        let mut b = self.idx;
-        for pin in self.pins.iter_mut() {
-            pin.write(Level::from(b & 1 != 0));
-            b >>= 1;
-        }
-    }
-
-    fn up(&mut self) {
-        self.idx = (self.idx + 1) % (1 << BITS);
-        self.out();
-    }
-
-    fn set(&mut self, idx: u32) -> Result<(), Box<dyn Error>> {
-        if idx >= (1 << BITS) {
-            return Err("The provided index is unexpressible by this counter".into());
-        }
-        self.idx = idx;
-        self.out();
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct Mux8 {
-    s: Rc<RefCell<Counter8>>,
-    z: Option<IoPin>,
-    e: Option<OutputPin>,
-}
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Let's ensure we have a sink before we proceed
@@ -284,16 +84,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         .default_output_device()
         .expect("no audio devices.. gross!");
     let dev_conf = device.default_output_config()?;
+    let dev_name = device.name().unwrap_or_else(|_| "dead device _ do not use".into());
+    println!("@Device Name = {}", dev_name);
+    println!("@Device Config = {:?}", dev_conf);
 
-    println!(
-        "name = {}",
-        device
-            .name()
-            .unwrap_or_else(|_| "dead device _ do not use".into())
-    );
-    println!("{:?}", dev_conf);
-
-    // Init the multiplexors to read user's input path for our tape.
+    /* Init the multiplexors to read user's input path for our tape */
+    // Construct output mux
     let counter_muxout = Counter8::new([17, 27, 22]);
     let mutrc_counter_muxout = Rc::new(RefCell::new(counter_muxout));
     let mux_out_lsb = Mux8 {
@@ -306,12 +102,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         z: None,
         e: Some(get_digital_out(6)),
     };
-
+    // An array to store our output mux
     let mut mux_out: [Mux8; 2] = [mux_out_lsb, mux_out_msb];
     for mx in mux_out.iter_mut() {
         mx.e.as_mut().unwrap().set_high();
     }
-
+    // Construct Input Mux
     let counter_muxin = Counter8::new([21, 20, 16]);
     let mutrc_counter_muxin = Rc::new(RefCell::new(counter_muxin));
     let mux_in_lsb = Mux8 {
@@ -324,12 +120,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         z: Some(get_digital_generic(24, Mode::Input)),
         e: None,
     };
-
+    // Array to store out input mux
     let mut mux_in: [Mux8; 2] = [mux_in_msb, mux_in_lsb];
     for mx in mux_in.iter_mut() {
         mx.z.as_mut().unwrap().set_bias(Bias::PullDown);
     }
 
+    // This array can collect and store the data received from every input mux
     let mut mux_in_data: [Level; 16] = [Level::Low; 16];
 
     // A nice oled display for some user feedback
@@ -343,11 +140,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stream_handle = OutputStreamBuilder::open_default_stream()?;
     let sink = Sink::connect_new(stream_handle.mixer());
 
+    // Pull the mp3s from ./assets/
     let mp3s: Vec<String> = get_mp3_from_local_assets()?;
     let mut current_mp3_idx: usize = 0;
     let mut mf: &String = &mp3s[current_mp3_idx];
     let mut buffer_ms: u64 = get_mp3_duration(get_decoded_mp3(mf));
-    
+
+    // Fill the sink with some sound!
     punch_file_into_sink(mf, &sink)?;
 
     // We need to calculate how we want to divi up our tape into seekable chuncks
