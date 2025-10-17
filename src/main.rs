@@ -8,12 +8,66 @@ use oled::*;
 use pinio::*;
 use prelude::*;
 
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+enum DotLevel {
+    High,
+    #[default] Low,
+}
+
+impl Not for DotLevel {
+    type Output = Self;
+    fn not(self) -> Self::Output {
+        match self {
+            DotLevel::High => DotLevel::Low,
+            DotLevel::Low  => DotLevel::High,
+        }
+    }
+}
+
+impl DotLevel {
+    fn to_u8(self) -> u8 {
+        match self {
+            DotLevel::Low => 0,
+            DotLevel::High => 1,
+        }
+    }
+    
+    fn to_bool(self) -> bool {
+        match self {
+            DotLevel::Low => false,
+            DotLevel::High => true,
+        }
+    }
+    
+    fn from_gpio_level(lv: &Level) -> DotLevel {
+        match lv {
+            Level::High => DotLevel::High,
+            Level::Low => DotLevel::Low,
+        }
+    }
+}
+
 // UI for a gpio/mux pin
-#[derive(Debug, Default, Copy, Clone)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
 struct Dot {
     x: i32,
     y: i32,
     sz: u32,
+    lv: DotLevel,
+}
+
+impl Dot {
+    fn same_tile(self, other: &Dot) -> bool {
+        self.x == other.x && self.y == other.y
+    }
+
+    fn is_low(self) -> bool {
+        self.lv == DotLevel::Low
+    }
+
+    fn is_high(self) -> bool {
+        self.lv == DotLevel::High
+    }
 }
 
 // UI for connections between pins
@@ -23,13 +77,13 @@ struct Link {
     b: Dot,
 }
 
-fn bit_at(value: &usize, idx: u32) -> u8 {
+fn bit_at(value: &u16, idx: u32) -> u8 {
     ((value >> idx) & 1) as u8
 }
 
 // for some binary number (value), return the index of the
 // high bit furthest from an arbitrary point in this bitstring (mark)
-fn get_bitidx_at_maxdelta(mark: &u32, value: &usize, modulo: u32) -> Option<u64> {
+fn get_bitidx_at_maxdelta(mark: &u32, value: &u16, modulo: u32) -> Option<u64> {
     let mut delta: u32 = 0;
     let mut idx_maxdelta: Option<u64> = None;
     while delta < (modulo / 2) {
@@ -95,9 +149,20 @@ fn get_dot_row(doty: i32, size: u32, pad: u32, num: usize) -> Vec<Dot> {
     let mut dotx: i32 = 0; 
     for _ in 0..num {
         dotx = (dotx as u32 + pad) as i32;
-        dots.push(Dot{x: dotx, y: doty, sz: size});
+        dots.push(Dot{x: dotx, y: doty, sz: size, lv: DotLevel::Low});
     }
     return dots;
+}
+
+fn clear_dot(oled: &mut Display, dot: &mut Dot) {
+    dot.lv = DotLevel::Low;
+    oled.circle(dot.x, dot.y, dot.sz, Some(Brush::Eraser));
+    oled.circle(dot.x, dot.y, dot.sz, Some(Brush::Pen));
+}
+
+fn fill_dot(oled: &mut Display, dot: &mut Dot) {
+    dot.lv = DotLevel::High;
+    oled.circle(dot.x, dot.y, dot.sz, Some(Brush::Marker));
 }
     
 fn main() -> Result<(), Box<dyn Error>> {
@@ -162,10 +227,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     const title_ui_ycoord: i32 = 5;
     const muxout_ui_ycoord: i32 = 15;
     const muxin_ui_ycoord: i32 = 55;
-    const line_ui_ystart: i32 = muxout_ui_ycoord + 10;
-    const line_ui_yend: i32 = muxin_ui_ycoord - 10;
     const dot_ui_size: u32 = 7;
     const dot_ui_xpad: u32 = dot_ui_size;
+
+    // we need a to keep track of the connections.
+    let mut links: Vec<Link> = Vec::new();
 
     // Some user input to skip to next song
     let button : InputPin = get_digital_in(26);
@@ -187,19 +253,30 @@ fn main() -> Result<(), Box<dyn Error>> {
     // We need to calculate how we want to divi up our tape into seekable chuncks
     let num_chunks : u32 = num_steps as u32;
     let mut chunk_len: u64 = buffer_ms / num_chunks as u64;
+    let mut jump_to: Option<u64> = None;
     let mut jump_to_ms: Option<u64> = None;
-    let mut jump_from: u32 = 0;
+    let mut position: u32 = 0;
 
     // feedback for selected song
     ssd1306.text(5, title_ui_ycoord, mf);
     // feedback for outmux
-    let dots: [Dot; num_steps] = get_dot_row(
+    let mut muxout_dots: [Dot; num_steps] = get_dot_row(
         muxout_ui_ycoord,
         dot_ui_size,
         dot_ui_xpad,
         num_steps
     ).try_into().unwrap();
-    for dot in dots {
+    for dot in muxout_dots {
+        ssd1306.circle(dot.x, dot.y, dot.sz, Some(Brush::Pen));
+    }
+    // feedback for inmux
+    let mut muxin_dots: [Dot; num_steps] = get_dot_row(
+        muxin_ui_ycoord,
+        dot_ui_size,
+        dot_ui_xpad,
+        num_steps
+    ).try_into().unwrap();
+    for dot in muxin_dots {
         ssd1306.circle(dot.x, dot.y, dot.sz, Some(Brush::Pen));
     }
 
@@ -207,6 +284,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     sink.play();
 
     loop {
+        // We need to compensate for calculation time so let's take a Instant
+        let epoch: Instant = Instant::now();
+        
         // Check if we skip to next tape loop
         if button.is_low() && latch == Latch::Reset {
             // Set the latch to avoid double skipping
@@ -231,29 +311,33 @@ fn main() -> Result<(), Box<dyn Error>> {
             latch = Latch::Reset;
         }
         
+        // Clear dot from last time
+        let mut muxout_dot: &mut Dot = &mut muxout_dots[position as usize];
+        clear_dot(&mut ssd1306, muxout_dot);
+                
         // Jump if required
         if let Some(j) = jump_to_ms {
             sink.try_seek(Duration::from_millis(j))?;
         }
 
-        // We need to compensate for calculation time so let's take a Instant
-        let epoch: Instant = Instant::now();
-
-        // Clear dot from last time
-        let mut muxout_dot: &Dot = &dots[jump_from as usize];
-        ssd1306.circle(muxout_dot.x, muxout_dot.y, muxout_dot.sz, Some(Brush::Eraser));
-        ssd1306.circle(muxout_dot.x, muxout_dot.y, muxout_dot.sz, Some(Brush::Pen));
+        // Update our position
+        if let Some(j) = jump_to {
+            position = j as u32;
+        } else {
+            position = (position + 1) % num_chunks;
+        }
         
-        // ROR output index
-        jump_from = (jump_from + 1) % num_chunks;
-        let (w, i): (usize, u32) = ((jump_from / 8) as usize, jump_from % 8);
+        // Throw our position onto the GPIO
+        let inv_position: u32 = num_chunks - position - 1;
+        println!("{}, !{}", position, inv_position);
+        let (w, i): (usize, u32) = ((inv_position / 8) as usize, inv_position % 8);
         mux_out[w].s.borrow_mut().set(i)?;
         mux_out[w].e.as_mut().unwrap().set_low();
 
         // Replace with new dot after ROR
-        muxout_dot = &dots[jump_from as usize];
-        ssd1306.circle(muxout_dot.x, muxout_dot.y, muxout_dot.sz, Some(Brush::Marker));
-
+        muxout_dot = &mut muxout_dots[position as usize];
+        fill_dot(&mut ssd1306, muxout_dot);
+        
         // Scan all multiplexed inputs
         for (k, mx) in mux_in.iter_mut().enumerate() {
             for _ in 0..8 {
@@ -268,21 +352,33 @@ fn main() -> Result<(), Box<dyn Error>> {
         // We're done with our IO so we can diable the mux again.
         mux_out[w].e.as_mut().unwrap().set_high();
 
-        // Flatten the multiplexed input into a unsigned int.
-        let mut mux_in_byte: usize = mux_in_data.iter().enumerate()
-            .fold(0, |e, (i, &b)| {       // let mut e = 0
-            e | ((b as u8) as usize) << i // e |= &b << i;
-        });
-
-        // In my setup, the input mux reads s7 to s0. Let's flip the word to accomodate.
-        // mux_in_byte = mux_in_byte.reverse_bits();
-
-        // Calculate the longest path we can take between mux_out and mux_in
-        let jump_to: Option<u64> = get_bitidx_at_maxdelta(&jump_from, &mux_in_byte, num_chunks);
-
-        if let Some(j) = jump_to {
-            jump_from = j as u32;
+        // Update the state of our dots.
+        for (mut dot, &dat) in muxin_dots.iter_mut().zip(&mux_in_data) {
+            let cache: Dot = dot.clone();
+            dot.lv = DotLevel::from_gpio_level(&dat);
+            if *dot != cache {
+                match dot.lv {
+                    DotLevel::High => fill_dot(&mut ssd1306, dot),
+                    DotLevel::Low => clear_dot(&mut ssd1306, dot),
+                }
+            }
         }
+       
+        if let Some(lk) = links.iter().find(|&lk| lk.b.same_tile(muxout_dot)) {
+            links.retain(|lk| {
+                !muxin_dots.iter().any(|d| d.same_tile(&lk.b) && d.is_low())
+            });
+        }
+
+        // Flatten the multiplexed input into a unsigned int.
+        let mux_in_word: u16 = mux_in_data.iter().enumerate()
+            .fold(0, | word, (i, &byte) | {
+                // let k : u16 = (u16::BITS - 1 - i as u32) as u16;
+                word | (byte as u16) << i
+        });
+    
+        // Calculate the longest path we can take between mux_out and mux_in
+        jump_to = get_bitidx_at_maxdelta(&position, &mux_in_word, num_chunks);
 
         // Convert that to a jump position on our tape
         jump_to_ms = match jump_to {
@@ -297,7 +393,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let tape_loc: u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
         println!(
             "{:08}ms -- @{:02} x{:016b}",
-            tape_loc, jump_from, mux_in_byte
+            tape_loc, position, mux_in_word
         );
 
         // Sleep until we are ready to jump again.
