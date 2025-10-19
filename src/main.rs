@@ -315,8 +315,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         
         // Clear dot from last time
-        let mut muxout_dot: &mut Dot = &mut muxout_dots[position as usize];
-        clear_dot(&mut ssd1306, muxout_dot);
+        let mut muxout_dot: Dot = muxout_dots[position as usize];
+        clear_dot(&mut ssd1306, &mut muxout_dot);
                 
         // Jump if required
         if let Some(j) = jump_to_ms {
@@ -337,8 +337,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         mux_out[w].e.as_mut().unwrap().set_low();
 
         // Replace with new dot after ROR
-        muxout_dot = &mut muxout_dots[position as usize];
-        fill_dot(&mut ssd1306, muxout_dot);
+        muxout_dot = muxout_dots[position as usize];
+        fill_dot(&mut ssd1306, &mut muxout_dot);
         
         // Scan all multiplexed inputs
         for (k, mx) in mux_in.iter_mut().enumerate() {
@@ -355,7 +355,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         mux_out[w].e.as_mut().unwrap().set_high();
 
         // Update the state of our dots.
-        for (mut dot, &dat) in muxin_dots.iter_mut().zip(&mux_in_data) {
+        for (dot, &dat) in muxin_dots.iter_mut().zip(&mux_in_data) {
             let cache: Dot = dot.clone();
             dot.lv = DotLevel::from_gpio_level(&dat);
             if *dot != cache {
@@ -366,41 +366,31 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
         }
 
-        println!("dots drawn {:?}", epoch.elapsed());
-
-        // Lets remove links where link.b does not share its state with muxin_dots
-        let linkscache = links.clone();
-        links.retain(|lk| {
-            let valid_lka: bool = lk.a.same_tile(muxout_dot);
-            let in_high: bool = muxin_dots.iter().any(|d| d.same_tile(&lk.b) && d.is_high());
-            !valid_lka && !in_high
-        });
-
-        // We need to rebuild all the connections for this muxout_dot
-        links.extend(
-            muxin_dots.iter().filter(|d| d.is_high())
-                .map(|d| Link { a: *muxout_dot, b: *d }),
-        );
-
-        // There with be douplicates, let's drop them
-        links.sort_by_key(|lk| (lk.a, lk.b));
-        links.dedup_by(|outdot, indot| {
-            outdot.a.same_tile(&indot.a) && outdot.b.same_tile(&indot.b)
-        });
-
-        // Let's erase all drawn connections and redraw them, there won't be many.
-        if linkscache != links {
-            println!("Erase");
-            ssd1306.rect(
-                0, line_ui_ystart,
-                128, (line_ui_yend - line_ui_ystart + 2) as u32,
-                Some(Brush::Eraser)
-            );
-            for lk in links.iter() {
-                ssd1306.line(lk.a.x, line_ui_ystart, lk.b.x, line_ui_yend, None);
+        // Clean up dead links for this step
+        let mut dead_links: Vec<Link> = Vec::new();
+        let mut live_links: Vec<Link> = Vec::new(); 
+        for link in links.iter().filter(|&lk| lk.a.same_tile(&muxout_dot)) {
+            match muxin_dots.iter().find(|&dot| dot.same_tile(&link.b)) { 
+                Some(dot) => {
+                    if dot.is_low() { dead_links.push(*link); }
+                    if dot.is_high() { live_links.push(*link); }
+                },
+                None => dead_links.push(*link),
             }
         }
-        println!("links drawn {:?}", epoch.elapsed());
+        links.retain(|lk| {
+            if dead_links.contains(lk) {
+                ssd1306.line(lk.a.x, line_ui_ystart, lk.b.x, line_ui_yend, Some(Brush::Eraser));
+                false
+            } else { true }
+        });
+        links.extend(muxin_dots.iter().filter(|d| d.is_high()).filter_map(|d| {
+            let new_lk = Link { a: muxout_dot, b: *d };
+            if live_links.contains(&new_lk) { None } else {
+                ssd1306.line(new_lk.a.x, line_ui_ystart, new_lk.b.x, line_ui_yend, None);
+                Some(new_lk)
+            }
+        }));
 
         // Flatten the multiplexed input into a unsigned int.
         let mux_in_word: u16 = mux_in_data.iter().enumerate()
@@ -421,8 +411,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Paint any changes to the display
         ssd1306.paint();
         
-        println!("painted {:?}", epoch.elapsed());
-
         // Bit of feedback on the console.
         let tape_loc: u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
         println!(

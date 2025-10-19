@@ -34,6 +34,16 @@ impl Brush {
             Brush::Eraser => PrimitiveStyle::with_fill(Off),
         }
     }
+
+    pub fn stroke_style(self) -> PrimitiveStyle<BinaryColor> {
+        use BinaryColor::{Off, On};
+        match self {
+            Brush::Marker => PrimitiveStyle::with_stroke(On, 3),
+            Brush::Pen    => PrimitiveStyle::with_stroke(On, 2),
+            Brush::Pencil => PrimitiveStyle::with_stroke(On, 1),
+            Brush::Eraser => PrimitiveStyle::with_stroke(Off, 3),
+        }
+    }
 }
 
 // Models the SSD1306 oled display
@@ -83,7 +93,7 @@ impl Display {
         let end = Point::new(v, w);
         assert!(self.point_in_range(start) && self.point_in_range(end));
         
-        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).style();
+        let style: PrimitiveStyle<BinaryColor> = brush.unwrap_or(self.default_brush).stroke_style();
 
         let line = Line::new(start, end);
         line.into_styled(style).draw(&mut self.oled).unwrap();
