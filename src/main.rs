@@ -8,7 +8,7 @@ use oled::*;
 use pinio::*;
 use prelude::*;
 
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum DotLevel {
     High,
     #[default] Low,
@@ -48,7 +48,7 @@ impl DotLevel {
 }
 
 // UI for a gpio/mux pin
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq)]
+#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 struct Dot {
     x: i32,
     y: i32,
@@ -71,7 +71,7 @@ impl Dot {
 }
 
 // UI for connections between pins
-#[derive(Default, Debug, Copy, Clone)]
+#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
 struct Link {
     a: Dot,
     b: Dot,
@@ -225,8 +225,11 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Some UI decisions.
     const title_ui_ycoord: i32 = 5;
-    const muxout_ui_ycoord: i32 = 15;
+    const title_ui_ysize: u32 = 8;
+    const muxout_ui_ycoord: i32 = (title_ui_ycoord as u32 + title_ui_ysize + 2) as i32;
     const muxin_ui_ycoord: i32 = 55;
+    const line_ui_ystart: i32 = muxout_ui_ycoord + 10;
+    const line_ui_yend: i32 = muxin_ui_ycoord - 5;
     const dot_ui_size: u32 = 7;
     const dot_ui_xpad: u32 = dot_ui_size;
 
@@ -251,7 +254,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     punch_file_into_sink(mf, &sink)?;
 
     // We need to calculate how we want to divi up our tape into seekable chuncks
-    let num_chunks : u32 = num_steps as u32;
+    const num_chunks : u32 = num_steps as u32;
     let mut chunk_len: u64 = buffer_ms / num_chunks as u64;
     let mut jump_to: Option<u64> = None;
     let mut jump_to_ms: Option<u64> = None;
@@ -304,7 +307,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             sink.play();
 
             // Draw the music file path to screen
-            ssd1306.rect(0, 0, 128, 20, Some(Brush::Eraser));
+            ssd1306.rect(0, 0, 128, title_ui_ysize, Some(Brush::Eraser));
             ssd1306.text(5, 5, mf);
         } else if latch == Latch::Set && button.is_high() {
             // User has released the button
@@ -326,10 +329,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         } else {
             position = (position + 1) % num_chunks;
         }
-        
+               
         // Throw our position onto the GPIO
         let inv_position: u32 = num_chunks - position - 1;
-        println!("{}, !{}", position, inv_position);
         let (w, i): (usize, u32) = ((inv_position / 8) as usize, inv_position % 8);
         mux_out[w].s.borrow_mut().set(i)?;
         mux_out[w].e.as_mut().unwrap().set_low();
@@ -363,12 +365,42 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-       
-        if let Some(lk) = links.iter().find(|&lk| lk.b.same_tile(muxout_dot)) {
-            links.retain(|lk| {
-                !muxin_dots.iter().any(|d| d.same_tile(&lk.b) && d.is_low())
-            });
+
+        println!("dots drawn {:?}", epoch.elapsed());
+
+        // Lets remove links where link.b does not share its state with muxin_dots
+        let linkscache = links.clone();
+        links.retain(|lk| {
+            let valid_lka: bool = lk.a.same_tile(muxout_dot);
+            let in_high: bool = muxin_dots.iter().any(|d| d.same_tile(&lk.b) && d.is_high());
+            !valid_lka && !in_high
+        });
+
+        // We need to rebuild all the connections for this muxout_dot
+        links.extend(
+            muxin_dots.iter().filter(|d| d.is_high())
+                .map(|d| Link { a: *muxout_dot, b: *d }),
+        );
+
+        // There with be douplicates, let's drop them
+        links.sort_by_key(|lk| (lk.a, lk.b));
+        links.dedup_by(|outdot, indot| {
+            outdot.a.same_tile(&indot.a) && outdot.b.same_tile(&indot.b)
+        });
+
+        // Let's erase all drawn connections and redraw them, there won't be many.
+        if linkscache != links {
+            println!("Erase");
+            ssd1306.rect(
+                0, line_ui_ystart,
+                128, (line_ui_yend - line_ui_ystart + 2) as u32,
+                Some(Brush::Eraser)
+            );
+            for lk in links.iter() {
+                ssd1306.line(lk.a.x, line_ui_ystart, lk.b.x, line_ui_yend, None);
+            }
         }
+        println!("links drawn {:?}", epoch.elapsed());
 
         // Flatten the multiplexed input into a unsigned int.
         let mux_in_word: u16 = mux_in_data.iter().enumerate()
@@ -388,6 +420,8 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Paint any changes to the display
         ssd1306.paint();
+        
+        println!("painted {:?}", epoch.elapsed());
 
         // Bit of feedback on the console.
         let tape_loc: u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
@@ -397,6 +431,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         );
 
         // Sleep until we are ready to jump again.
-        sleep(Duration::from_millis(chunk_len) - epoch.elapsed());
+        let chunk_duration = Duration::from_millis(chunk_len);
+        let looptime_remaining: Duration = chunk_duration.saturating_sub(epoch.elapsed());
+        println!("loop time remaining {:?}", looptime_remaining);
+        sleep(looptime_remaining);
     }
 }
