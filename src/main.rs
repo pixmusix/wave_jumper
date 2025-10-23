@@ -100,32 +100,32 @@ fn get_bitidx_at_maxdelta(mark: &u32, value: &u16, modulo: u32) -> Option<u64> {
     return idx_maxdelta;
 }
 
-fn get_mp3_from_local_assets() -> Result<Vec<String>, std::io::Error> {
+fn get_wav_from_local_assets() -> Result<Vec<String>, std::io::Error> {
     let entries: ReadDir = read_dir("./assets/")?;
     let ok_entries = entries.filter_map(|res| res.ok());
     let paths = ok_entries.map(|e| e.path());
     
-    let mp3s = paths.filter(|p| {
+    let waves = paths.filter(|p| {
         let ext: Option<&OsStr> = p.extension();
         let ext_str: Option<&str> = ext.and_then(|e| e.to_str());
-        ext_str.map_or(false, |e| e.eq_ignore_ascii_case("mp3"))
+        ext_str.map_or(false, |e| e.eq_ignore_ascii_case("wav"))
     });
 
-    let mp3_string = mp3s.map(|p| p.to_string_lossy().into_owned());
-    Ok(mp3_string.collect())
+    let wav_string = waves.map(|p| p.to_string_lossy().into_owned());
+    Ok(wav_string.collect())
 }
 
-fn get_decoded_mp3(mf: &str) -> DecoderBuilder<File> {
+fn get_decoded_wav(mf: &str) -> DecoderBuilder<File> {
     let file = File::open(mf).unwrap();
     let len = file.metadata().unwrap().len();
     DecoderBuilder::new()
         .with_data(file)
-        .with_hint("mp3")
+        .with_hint("wav")
         .with_byte_len(len)
         .with_seekable(true)
 }
 
-fn get_mp3_duration(dat: DecoderBuilder<File>) -> u64 {
+fn get_wav_duration(dat: DecoderBuilder<File>) -> u64 {
     let source = dat.build().unwrap();
     let buffer_duration: Duration = source.total_duration().unwrap();
     let buffer_ms: u64 = buffer_duration.as_millis() as u64;
@@ -133,7 +133,7 @@ fn get_mp3_duration(dat: DecoderBuilder<File>) -> u64 {
 }
 
 fn punch_file_into_sink(mf: &str, sink: &Sink) -> Result<(), Box<dyn Error>>{
-    let tape = get_decoded_mp3(&mf).build_looped()?;
+    let tape = get_decoded_wav(&mf).build_looped()?;
     sink.append(tape);
     Ok(())
 }
@@ -244,11 +244,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     let stream_handle = OutputStreamBuilder::open_default_stream()?;
     let sink = Sink::connect_new(stream_handle.mixer());
 
-    // Pull the mp3s from ./assets/
-    let mp3s: Vec<String> = get_mp3_from_local_assets()?;
-    let mut current_mp3_idx: usize = 0;
-    let mut mf: &String = &mp3s[current_mp3_idx];
-    let mut buffer_ms: u64 = get_mp3_duration(get_decoded_mp3(mf));
+    // Pull the wavs from ./assets/
+    let waves: Vec<String> = get_wav_from_local_assets()?;
+    let mut current_wav_idx: usize = 0;
+    let mut mf: &String = &waves[current_wav_idx];
+    let mut buffer_ms: u64 = get_wav_duration(get_decoded_wav(mf));
 
     // Fill the sink with some sound!
     punch_file_into_sink(mf, &sink)?;
@@ -297,11 +297,13 @@ fn main() -> Result<(), Box<dyn Error>> {
             // Clear sink of our current loop
             sink.stop();
             // Get the next song
-            current_mp3_idx = (current_mp3_idx + 1) % mp3s.len();
-            mf = &mp3s[current_mp3_idx];
+            current_wav_idx = (current_wav_idx + 1) % waves.len();
+            mf = &waves[current_wav_idx];
             // We need to update the length of each sample to new track
-            buffer_ms = get_mp3_duration(get_decoded_mp3(mf));
+            buffer_ms = get_wav_duration(get_decoded_wav(mf));
             chunk_len = buffer_ms / num_chunks as u64;
+            // start from the top
+            position = 0;
             // Got a new file, let's play it
             punch_file_into_sink(mf, &sink)?;
             sink.play();
