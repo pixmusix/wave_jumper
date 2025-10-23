@@ -1,3 +1,6 @@
+#![allow(non_upper_case_globals)]
+
+
 mod oled;
 mod mux;
 mod pinio;
@@ -7,6 +10,7 @@ use mux::*;
 use oled::*;
 use pinio::*;
 use prelude::*;
+
 
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 enum DotLevel {
@@ -25,6 +29,8 @@ impl Not for DotLevel {
 }
 
 impl DotLevel {
+
+    #[allow(dead_code)]
     fn to_u8(self) -> u8 {
         match self {
             DotLevel::Low => 0,
@@ -32,6 +38,7 @@ impl DotLevel {
         }
     }
     
+    #[allow(dead_code)]
     fn to_bool(self) -> bool {
         match self {
             DotLevel::Low => false,
@@ -39,6 +46,7 @@ impl DotLevel {
         }
     }
     
+    #[allow(dead_code)]
     fn from_gpio_level(lv: &Level) -> DotLevel {
         match lv {
             Level::High => DotLevel::High,
@@ -57,14 +65,18 @@ struct Dot {
 }
 
 impl Dot {
+    
+    #[allow(dead_code)]
     fn same_tile(self, other: &Dot) -> bool {
         self.x == other.x && self.y == other.y
     }
 
+    #[allow(dead_code)]
     fn is_low(self) -> bool {
         self.lv == DotLevel::Low
     }
 
+    #[allow(dead_code)]
     fn is_high(self) -> bool {
         self.lv == DotLevel::High
     }
@@ -180,45 +192,45 @@ fn main() -> Result<(), Box<dyn Error>> {
     const num_steps: usize = 16;
 
     /* Init the multiplexors to read user's input path for our tape */
-    // Construct output mux
-    let counter_muxout = Counter8::new([17, 27, 22]);
-    let mutrc_counter_muxout = Rc::new(RefCell::new(counter_muxout));
-    let mux_out_lsb = Mux8 {
-        s: Rc::clone(&mutrc_counter_muxout),
+    // Construct demultiplexor
+    let counter_demux = Counter8::new([17, 27, 22]);
+    let mutrc_counter_demux = Rc::new(RefCell::new(counter_demux));
+    let demux_lsb = Mux8 {
+        s: Rc::clone(&mutrc_counter_demux),
         z: None,
         e: Some(get_digital_out(5)),
     };
-    let mux_out_msb = Mux8 {
-        s: Rc::clone(&mutrc_counter_muxout),
+    let demux_msb = Mux8 {
+        s: Rc::clone(&mutrc_counter_demux),
         z: None,
         e: Some(get_digital_out(6)),
     };
-    // An array to store our output mux
-    let mut mux_out: [Mux8; 2] = [mux_out_lsb, mux_out_msb];
-    for mx in mux_out.iter_mut() {
+    // An array to store our demultiplexor
+    let mut demux: [Mux8; 2] = [demux_lsb, demux_msb];
+    for mx in demux.iter_mut() {
         mx.e.as_mut().unwrap().set_high();
     }
     // Construct Input Mux
     let counter_muxin = Counter8::new([21, 20, 16]);
     let mutrc_counter_muxin = Rc::new(RefCell::new(counter_muxin));
-    let mux_in_lsb = Mux8 {
+    let mux_lsb = Mux8 {
         s: Rc::clone(&mutrc_counter_muxin),
         z: Some(get_digital_generic(23, Mode::Input)),
         e: None,
     };
-    let mux_in_msb = Mux8 {
+    let mux_msb = Mux8 {
         s: Rc::clone(&mutrc_counter_muxin),
         z: Some(get_digital_generic(24, Mode::Input)),
         e: None,
     };
-    // Array to store out input mux
-    let mut mux_in: [Mux8; 2] = [mux_in_msb, mux_in_lsb];
-    for mx in mux_in.iter_mut() {
+    // Array to store our input multiplexors
+    let mut mux: [Mux8; 2] = [mux_msb, mux_lsb];
+    for mx in mux.iter_mut() {
         mx.z.as_mut().unwrap().set_bias(Bias::PullDown);
     }
 
     // This array can collect and store the data received from every input mux
-    let mut mux_in_data: [Level; num_steps] = [Level::Low; num_steps];
+    let mut mux_data: [Level; num_steps] = [Level::Low; num_steps];
 
     // A nice oled display for some user feedback
     let mut ssd1306 = Display::new(get_ssd1306(I2c::new()?));
@@ -226,9 +238,9 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Some UI decisions.
     const title_ui_ycoord: i32 = 5;
     const title_ui_ysize: u32 = 8;
-    const muxout_ui_ycoord: i32 = (title_ui_ycoord as u32 + title_ui_ysize + 2) as i32;
+    const demux_ui_ycoord: i32 = (title_ui_ycoord as u32 + title_ui_ysize + 2) as i32;
     const muxin_ui_ycoord: i32 = 55;
-    const line_ui_ystart: i32 = muxout_ui_ycoord + 10;
+    const line_ui_ystart: i32 = demux_ui_ycoord + 10;
     const line_ui_yend: i32 = muxin_ui_ycoord - 5;
     const dot_ui_size: u32 = 7;
     const dot_ui_xpad: u32 = dot_ui_size;
@@ -262,14 +274,14 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // feedback for selected song
     ssd1306.text(5, title_ui_ycoord, mf);
-    // feedback for outmux
-    let mut muxout_dots: [Dot; num_steps] = get_dot_row(
-        muxout_ui_ycoord,
+    // feedback for demux
+    let demux_dots: [Dot; num_steps] = get_dot_row(
+        demux_ui_ycoord,
         dot_ui_size,
         dot_ui_xpad,
         num_steps
     ).try_into().unwrap();
-    for dot in muxout_dots {
+    for dot in demux_dots {
         ssd1306.circle(dot.x, dot.y, dot.sz, Some(Brush::Pen));
     }
     // feedback for inmux
@@ -317,8 +329,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         
         // Clear dot from last time
-        let mut muxout_dot: Dot = muxout_dots[position as usize];
-        clear_dot(&mut ssd1306, &mut muxout_dot);
+        let mut demux_dot: Dot = demux_dots[position as usize];
+        clear_dot(&mut ssd1306, &mut demux_dot);
                 
         // Jump if required
         if let Some(j) = jump_to_ms {
@@ -335,29 +347,29 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Throw our position onto the GPIO
         let inv_position: u32 = num_chunks - position - 1;
         let (w, i): (usize, u32) = ((inv_position / 8) as usize, inv_position % 8);
-        mux_out[w].s.borrow_mut().set(i)?;
-        mux_out[w].e.as_mut().unwrap().set_low();
+        demux[w].s.borrow_mut().set(i)?;
+        demux[w].e.as_mut().unwrap().set_low();
 
         // Replace with new dot after ROR
-        muxout_dot = muxout_dots[position as usize];
-        fill_dot(&mut ssd1306, &mut muxout_dot);
+        demux_dot = demux_dots[position as usize];
+        fill_dot(&mut ssd1306, &mut demux_dot);
         
         // Scan all multiplexed inputs
-        for (k, mx) in mux_in.iter_mut().enumerate() {
+        for (k, mx) in mux.iter_mut().enumerate() {
             for _ in 0..8 {
                 mx.s.borrow_mut().up();
                 sleep(Duration::from_micros(1000));
                 let reading: Level = mx.z.as_mut().unwrap().read();
                 let i: usize = (k * 8) + mx.s.borrow().idx as usize;
-                mux_in_data[i] = reading;
+                mux_data[i] = reading;
             }
         }
 
         // We're done with our IO so we can diable the mux again.
-        mux_out[w].e.as_mut().unwrap().set_high();
+        demux[w].e.as_mut().unwrap().set_high();
 
         // Update the state of our dots.
-        for (dot, &dat) in muxin_dots.iter_mut().zip(&mux_in_data) {
+        for (dot, &dat) in muxin_dots.iter_mut().zip(&mux_data) {
             let cache: Dot = dot.clone();
             dot.lv = DotLevel::from_gpio_level(&dat);
             if *dot != cache {
@@ -371,7 +383,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Clean up dead links for this step
         let mut dead_links: Vec<Link> = Vec::new();
         let mut live_links: Vec<Link> = Vec::new(); 
-        for link in links.iter().filter(|&lk| lk.a.same_tile(&muxout_dot)) {
+        for link in links.iter().filter(|&lk| lk.a.same_tile(&demux_dot)) {
             match muxin_dots.iter().find(|&dot| dot.same_tile(&link.b)) { 
                 Some(dot) => {
                     if dot.is_low() { dead_links.push(*link); }
@@ -387,7 +399,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             } else { true }
         });
         links.extend(muxin_dots.iter().filter(|d| d.is_high()).filter_map(|d| {
-            let new_lk = Link { a: muxout_dot, b: *d };
+            let new_lk = Link { a: demux_dot, b: *d };
             if live_links.contains(&new_lk) { None } else {
                 ssd1306.line(new_lk.a.x, line_ui_ystart, new_lk.b.x, line_ui_yend, None);
                 Some(new_lk)
@@ -395,14 +407,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         }));
 
         // Flatten the multiplexed input into a unsigned int.
-        let mux_in_word: u16 = mux_in_data.iter().enumerate()
+        let mux_word: u16 = mux_data.iter().enumerate()
             .fold(0, | word, (i, &byte) | {
                 // let k : u16 = (u16::BITS - 1 - i as u32) as u16;
                 word | (byte as u16) << i
         });
     
-        // Calculate the longest path we can take between mux_out and mux_in
-        jump_to = get_bitidx_at_maxdelta(&position, &mux_in_word, num_chunks);
+        // Calculate the longest path we can take between demux and mux
+        jump_to = get_bitidx_at_maxdelta(&position, &mux_word, num_chunks);
 
         // Convert that to a jump position on our tape
         jump_to_ms = match jump_to {
@@ -417,7 +429,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let tape_loc: u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
         println!(
             "{:08}ms -- @{:02} x{:016b}",
-            tape_loc, position, mux_in_word
+            tape_loc, position, mux_word
         );
 
         // Sleep until we are ready to jump again.
