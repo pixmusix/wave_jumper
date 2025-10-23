@@ -13,9 +13,8 @@ pub use rppal::gpio::{Bias, Level, Mode};
 use rppal::system::DeviceInfo;
 pub use rppal::i2c::I2c;
 
-// Can't live with 'em; can't live without 'em.
+// Can't live with it can't live without it.
 pub use std::error::Error;
-pub use std::ops::Not;
 
 // Reading files out of ./assets/
 pub use std::fs::{File, ReadDir};

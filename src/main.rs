@@ -1,93 +1,16 @@
 #![allow(non_upper_case_globals)]
 
-
 mod oled;
 mod mux;
 mod pinio;
+mod uifb;
 mod prelude;
 
 use mux::*;
 use oled::*;
 use pinio::*;
+use uifb::*;
 use prelude::*;
-
-
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-enum DotLevel {
-    High,
-    #[default] Low,
-}
-
-impl Not for DotLevel {
-    type Output = Self;
-    fn not(self) -> Self::Output {
-        match self {
-            DotLevel::High => DotLevel::Low,
-            DotLevel::Low  => DotLevel::High,
-        }
-    }
-}
-
-impl DotLevel {
-
-    #[allow(dead_code)]
-    fn to_u8(self) -> u8 {
-        match self {
-            DotLevel::Low => 0,
-            DotLevel::High => 1,
-        }
-    }
-    
-    #[allow(dead_code)]
-    fn to_bool(self) -> bool {
-        match self {
-            DotLevel::Low => false,
-            DotLevel::High => true,
-        }
-    }
-    
-    #[allow(dead_code)]
-    fn from_gpio_level(lv: &Level) -> DotLevel {
-        match lv {
-            Level::High => DotLevel::High,
-            Level::Low => DotLevel::Low,
-        }
-    }
-}
-
-// UI for a gpio/mux pin
-#[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
-struct Dot {
-    x: i32,
-    y: i32,
-    sz: u32,
-    lv: DotLevel,
-}
-
-impl Dot {
-    
-    #[allow(dead_code)]
-    fn same_tile(self, other: &Dot) -> bool {
-        self.x == other.x && self.y == other.y
-    }
-
-    #[allow(dead_code)]
-    fn is_low(self) -> bool {
-        self.lv == DotLevel::Low
-    }
-
-    #[allow(dead_code)]
-    fn is_high(self) -> bool {
-        self.lv == DotLevel::High
-    }
-}
-
-// UI for connections between pins
-#[derive(Default, Debug, Copy, Clone, Eq, PartialEq)]
-struct Link {
-    a: Dot,
-    b: Dot,
-}
 
 fn bit_at(value: &u16, idx: u32) -> u8 {
     ((value >> idx) & 1) as u8
@@ -428,14 +351,13 @@ fn main() -> Result<(), Box<dyn Error>> {
         // Bit of feedback on the console.
         let tape_loc: u64 = sink.get_pos().as_millis() as u64 % buffer_ms;
         println!(
-            "{:08}ms -- @{:02} x{:016b}",
+            "@{:08}ms -- x{:02} v{:016b}",
             tape_loc, position, mux_word
         );
 
         // Sleep until we are ready to jump again.
         let chunk_duration = Duration::from_millis(chunk_len);
         let looptime_remaining: Duration = chunk_duration.saturating_sub(epoch.elapsed());
-        println!("loop time remaining {:?}", looptime_remaining);
         sleep(looptime_remaining);
     }
 }
