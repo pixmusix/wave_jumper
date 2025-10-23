@@ -203,7 +203,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         dot_ui_size,
         dot_ui_xpad,
         num_steps
-    ).try_into().unwrap();
+    ).try_into().expect("Vec<Dot>'s len must equal chunk len");
+
     for dot in demux_dots {
         ssd1306.circle(dot.x, dot.y, dot.sz, Some(Brush::Pen));
     }
@@ -213,7 +214,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         dot_ui_size,
         dot_ui_xpad,
         num_steps
-    ).try_into().unwrap();
+    ).try_into().expect("Vec<Dot>'s len must equal chunk len");
     for dot in muxin_dots {
         ssd1306.circle(dot.x, dot.y, dot.sz, Some(Brush::Pen));
     }
