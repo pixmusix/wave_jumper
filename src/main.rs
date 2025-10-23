@@ -16,8 +16,6 @@ fn bit_at(value: &u16, idx: u32) -> u8 {
     ((value >> idx) & 1) as u8
 }
 
-// for some binary number (value), return the index of the
-// high bit furthest from an arbitrary point in this bitstring (mark)
 fn get_bitidx_at_maxdelta(mark: &u32, value: &u16, modulo: u32) -> Option<u64> {
     let mut delta: u32 = 0;
     let mut idx_maxdelta: Option<u64> = None;
