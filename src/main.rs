@@ -66,7 +66,7 @@ fn get_wav_duration(dat: DecoderBuilder<File>) -> u64 {
 }
 
 fn punch_file_into_sink(mf: &str, sink: &Sink) -> Result<(), Box<dyn Error>>{
-    let tape = get_decoded_wav(&mf).build_looped()?;
+    let tape = get_decoded_wav(mf).build_looped()?;
     sink.append(tape);
     Ok(())
 }
