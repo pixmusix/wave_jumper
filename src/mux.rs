@@ -1,8 +1,8 @@
 use crate::pinio::*;
 
 #[allow(unused_imports)]
-use rppal::gpio::{InputPin, IoPin, OutputPin};
-use rppal::gpio::Level;
+use rpi_pal::gpio::{InputPin, IoPin, OutputPin};
+use rpi_pal::gpio::Level;
 
 use std::rc::Rc;
 use std::cell::RefCell;

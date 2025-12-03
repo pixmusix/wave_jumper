@@ -1,5 +1,5 @@
 use std::ops::Not;
-use rppal::gpio::Level;
+use rpi_pal::gpio::Level;
 
 #[derive(Debug, Default, Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub enum DotLevel {

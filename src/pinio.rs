@@ -1,6 +1,6 @@
 #[allow(unused_imports)]
-use rppal::gpio::{InputPin, IoPin, OutputPin};
-use rppal::gpio::{Gpio, Mode};
+use rpi_pal::gpio::{InputPin, IoPin, OutputPin};
+use rpi_pal::gpio::{Gpio, Mode};
 
 #[allow(dead_code)]
 pub fn get_digital_out(pin: u8) -> OutputPin {

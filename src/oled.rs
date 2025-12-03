@@ -9,7 +9,7 @@ use embedded_graphics::primitives::{Rectangle, Circle, Line};
 use embedded_graphics::primitives::PrimitiveStyle;
 use embedded_graphics::text::Text;
 
-use rppal::i2c::I2c;
+use rpi_pal::i2c::I2c;
 
 // 128×64 I²C OLED in buffered-graphics mode
 pub type Oled = Ssd1306<I2CInterface<I2c>, DisplaySize128x64, BufferedGraphicsMode<DisplaySize128x64>>;

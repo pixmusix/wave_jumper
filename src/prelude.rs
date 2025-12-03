@@ -5,13 +5,13 @@ pub use ssd1306::rotation::DisplayRotation;
 
 // Interacting with gpio.
 #[allow(unused_imports)]
-pub use rppal::gpio::{InputPin, IoPin, OutputPin};
-pub use rppal::gpio::{Bias, Level, Mode};
+pub use rpi_pal::gpio::{InputPin, IoPin, OutputPin};
+pub use rpi_pal::gpio::{Bias, Level, Mode};
 
 // Constructing an i2c bus
 #[allow(unused_imports)]
-use rppal::system::DeviceInfo;
-pub use rppal::i2c::I2c;
+use rpi_pal::system::DeviceInfo;
+pub use rpi_pal::i2c::I2c;
 
 // Can't live with it can't live without it.
 pub use std::error::Error;

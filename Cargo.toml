@@ -8,5 +8,5 @@ cpal = "0.16.0"
 embedded-graphics = "0.8.1"
 rand = "0.9.2"
 rodio = "0.21.1"
-rppal = {version = "0.22.1", features = ["hal"]}
+rpi-pal = {version = "0.22.2", features = ["hal"]}
 ssd1306 = "0.10.0"
